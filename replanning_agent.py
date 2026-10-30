@@ -1,43 +1,4 @@
-# !pip install langchain-google-genai python-dotenv
 
-# ==========================================
-
-print("kernel is working!")
-
-# ==========================================
-
-import os
-from getpass import getpass
-os.environ["GOOGLE_API_KEY"] = getpass("Enter your Gemini API key: ")
-print("API key loaded:", bool(os.environ.get("GOOGLE_API_KEY")))
-
-# ==========================================
-
-import os
-from langchain_google_genai import ChatGoogleGenerativeAI
-
-llm = ChatGoogleGenerativeAI(
-model="gemini-3.8-flash",
-google_api_key=os.environ["GOOGLE_API_KEY"],
-temperature=0.4
-)
-
-print("Gemini is ready!")
-
-# ==========================================
-
-response = llm.invoke("Say hello in Arabic")
-print(response.content)
-
-# ==========================================
-
-text = response.content
-if isinstance(text, list):
- for item in text:
-  if isinstance(item, dict) and item.get("type") == "text":
-   print(item.get("text", ""))
-  else:
-   print(text)
 
 # ==========================================
 
