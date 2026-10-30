@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Dict, List
 from langgraph.graph import StateGraph, START, END
 
 from state import QuranReflectionState
@@ -21,8 +21,22 @@ def planner_node(state: QuranReflectionState) -> dict:
     }
 
 
+def prepare_overdue_tasks(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    prepared_tasks = []
+
+    for index, task in enumerate(tasks, start=1):
+        prepared_tasks.append({
+            "task_id": task.get("task_id", index),
+            "action_text": task.get("action_text", task.get("task", "")),
+            "status": task.get("status", "pending"),
+            "due_date": task.get("due_date", task.get("date", ""))
+        })
+
+    return prepared_tasks
+
+
 def replanning_node(state: QuranReflectionState) -> dict:
-    tasks = state.get("overdue_tasks", [])
+    tasks = prepare_overdue_tasks(state.get("overdue_tasks", []))
 
     result = generate_replanning_plan_with_ai(
         tasks=tasks,
@@ -38,6 +52,7 @@ def replanning_node(state: QuranReflectionState) -> dict:
 def check_overdue_tasks(state: QuranReflectionState):
     if state.get("overdue_tasks"):
         return "replanning"
+
     return END
 
 
