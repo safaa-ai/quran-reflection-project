@@ -14,6 +14,9 @@ class QuranReflectionState(TypedDict, total=False):
     selected_action: str
     user_id: str
     available_minutes: int
+    start_date: str
+    preferred_time: str
+    
     weekly_plan: List[Dict[str, Any]]
     completed_tasks: List[str]
     overdue_tasks: List[Task]
