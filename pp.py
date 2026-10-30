@@ -54,7 +54,14 @@ if st.button("Generate My Plan"):
             "tafsir_text": tafsir_text,
             "start_date": str(start_date),
             "preferred_time": preferred_time,
-            "overdue_tasks": []
+            "overdue_tasks": [
+    {
+        "task_id": 1,
+        "action_text": "Read Quran for 15 minutes",
+        "status": "pending",
+        "due_date": "2026-10-25"
+    }
+]
         }
 
         try:
