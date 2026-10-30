@@ -46,7 +46,7 @@ if not os.getenv("GOOGLE_API_KEY"):
 # 2) إعدادات ثابتة
 # -----------------------------------------------------------------------------
 # اسم الموديل. لو ظهر error 404 جربي تحطي في .env سطر: GEMINI_MODEL=gemini-2.5-flash
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
 # أقصى عدد محاولات للموديل لو الخطة طلعت فيها أخطاء.
 MAX_ATTEMPTS = 3
