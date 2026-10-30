@@ -29,7 +29,9 @@ def prepare_overdue_tasks(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "task_id": task.get("task_id", index),
             "action_text": task.get("action_text", task.get("task", "")),
             "status": task.get("status", "pending"),
-            "due_date": task.get("due_date", task.get("date", ""))
+            "due_date": task.get("due_date", task.get("date", "")),
+            "time": task.get("time", ""),
+            "duration_min": task.get("duration_min", 0)
         })
 
     return prepared_tasks
