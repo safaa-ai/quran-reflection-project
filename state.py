@@ -1,9 +1,13 @@
 from typing import TypedDict, List, Optional, Dict, Any
+
+
 class Task(TypedDict):
     task_id: int
     action_text: str
     status: str
     due_date: str
+    time: str
+    duration_min: int
 
 
 class QuranReflectionState(TypedDict, total=False):
@@ -16,7 +20,7 @@ class QuranReflectionState(TypedDict, total=False):
     available_minutes: int
     start_date: str
     preferred_time: str
-    
+
     weekly_plan: List[Dict[str, Any]]
     completed_tasks: List[str]
     overdue_tasks: List[Task]
