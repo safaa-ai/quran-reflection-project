@@ -1,9 +1,21 @@
+
 from typing import Any, Dict, List
 from langgraph.graph import StateGraph, START, END
 
 from state import QuranReflectionState
 from planner_agent import plan_action
 from replanning_agent import generate_replanning_plan_with_ai
+from rag_retriever import format_rag_prompt_context
+
+
+def rag_node(state: QuranReflectionState) -> dict:
+    verse_num = state.get("verse_number")
+
+    if verse_num:
+        context = format_rag_prompt_context(verse_num)
+        return {"tafsir_text": context}
+
+    return {}
 
 
 def planner_node(state: QuranReflectionState) -> dict:
@@ -60,10 +72,12 @@ def check_overdue_tasks(state: QuranReflectionState):
 
 graph = StateGraph(QuranReflectionState)
 
+graph.add_node("rag", rag_node)
 graph.add_node("planner", planner_node)
 graph.add_node("replanning", replanning_node)
 
-graph.add_edge(START, "planner")
+graph.add_edge(START, "rag")
+graph.add_edge("rag", "planner")
 
 graph.add_conditional_edges(
     "planner",
