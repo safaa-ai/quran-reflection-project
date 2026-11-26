@@ -39,7 +39,7 @@ def rag_node(state: QuranReflectionState) -> dict:
     return {
         "quran_context": context,
         "tafsir_text": context,
-        "error": None
+        "error": None,
     }
 
 
@@ -48,13 +48,23 @@ def rag_node(state: QuranReflectionState) -> dict:
 # ==========================================
 
 def route_after_rag(state: QuranReflectionState) -> str:
+    """Choose the correct workflow path."""
 
     if state.get("error"):
         return END
 
+    # Replanning has priority over creating a new plan.
+    if state.get("run_replanning") and (
+        state.get("replan_custom_action")
+        or state.get("overdue_tasks")
+    ):
+        return "replanning"
+
+    # Normal planning.
     if state.get("selected_action") or state.get("custom_action"):
         return "planner"
 
+    # Reflection only.
     return "reflection"
 
 
@@ -65,19 +75,23 @@ def route_after_rag(state: QuranReflectionState) -> str:
 def reflection_node(state: QuranReflectionState) -> dict:
     """Generate reflection and suggested behavioral actions."""
 
-    context = state.get("quran_context") or state.get("tafsir_text", "")
+    context = state.get("quran_context") or ""
 
     if not context:
         return {"error": "Quran context is missing."}
 
-    result = generate_reflection(quran_context=context)
+    try:
+        result = generate_reflection(quran_context=context)
 
-    return {
-        "reflection_text": result.get("reflection_text", ""),
-        "suggested_actions": result.get("suggested_actions", []),
-        "reflection_warnings": result.get("warnings", []),
-        "error": None
-    }
+        return {
+            "reflection_text": result.get("reflection_text", ""),
+            "suggested_actions": result.get("suggested_actions", []),
+            "reflection_warnings": result.get("warnings", []),
+            "error": None,
+        }
+
+    except Exception as e:
+        return {"error": f"Reflection error: {str(e)}"}
 
 
 # ==========================================
@@ -98,29 +112,35 @@ def planner_node(state: QuranReflectionState) -> dict:
             "error": "Please select an action before planning."
         }
 
-    context = state.get("quran_context") or state.get("tafsir_text", "")
+    context = state.get("quran_context") or ""
 
-    result = plan_action(
-        action_text=action_text,
-        available_minutes=state.get("available_minutes", 30),
-        quran_context=context,
-        start_date=state.get("start_date"),
-        end_date=state.get("end_date"),
-        duration_days=state.get("duration_days"),
-        preferred_time=state.get("preferred_time", "any"),
-        is_custom=bool(
-            state.get("is_custom") or state.get("custom_action")
-        ),
-    )
+    try:
+        result = plan_action(
+            action_text=action_text,
+            available_minutes=int(
+                state.get("available_minutes") or 30
+            ),
+            quran_context=context,
+            start_date=state.get("start_date"),
+            end_date=state.get("end_date"),
+            duration_days=state.get("duration_days"),
+            preferred_time=state.get("preferred_time", "any"),
+            is_custom=bool(
+                state.get("is_custom") or state.get("custom_action")
+            ),
+        )
 
-    return {
-        "weekly_plan": result.get("tasks", []),
-        "plan_summary": result.get("summary", ""),
-        "plan_warnings": result.get("warnings", []),
-        "start_date": result.get("start_date", ""),
-        "end_date": result.get("end_date", ""),
-        "error": None
-    }
+        return {
+            "weekly_plan": result.get("tasks", []),
+            "plan_summary": result.get("summary", ""),
+            "plan_warnings": result.get("warnings", []),
+            "start_date": result.get("start_date", ""),
+            "end_date": result.get("end_date", ""),
+            "error": None,
+        }
+
+    except Exception as e:
+        return {"error": f"Planner error: {str(e)}"}
 
 
 # ==========================================
@@ -130,6 +150,7 @@ def planner_node(state: QuranReflectionState) -> dict:
 def prepare_overdue_tasks(
     tasks: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
+    """Normalize tasks before sending them to the replanning agent."""
 
     prepared_tasks = []
 
@@ -137,17 +158,15 @@ def prepare_overdue_tasks(
 
         prepared_tasks.append({
             "task_id": task.get("task_id", index),
-            "action_text": task.get(
-                "action_text",
-                task.get("task", "")
+            "action_text": (
+                task.get("action_text")
+                or task.get("task", "")
             ),
             "status": task.get("status", "pending"),
-            "due_date": task.get(
-                "due_date",
-                task.get("date", "")
+            "due_date": (
+                task.get("due_date")
+                or task.get("date", "")
             ),
-            "time": task.get("time", ""),
-            "duration_min": task.get("duration_min", 0)
         })
 
     return prepared_tasks
@@ -160,92 +179,100 @@ def prepare_overdue_tasks(
 def replanning_node(state: QuranReflectionState) -> dict:
     """Handle custom actions or overdue tasks."""
 
-    if state.get("replan_custom_action"):
+    try:
 
-        action_text = (
-            state.get("custom_action")
-            or state.get("selected_action")
-            or ""
-        ).strip()
+        # ----------------------------------
+        # Custom action replanning
+        # ----------------------------------
 
-        if not action_text:
-            return {"error": "Custom action is required."}
+        if state.get("replan_custom_action"):
 
-        if not state.get("start_date") or not state.get("end_date"):
+            action_text = (
+                state.get("custom_action")
+                or state.get("selected_action")
+                or ""
+            ).strip()
+
+            if not action_text:
+                return {
+                    "error": "Custom action is required."
+                }
+
+            start_date = state.get("start_date")
+            end_date = state.get("end_date")
+
+            if not start_date or not end_date:
+                return {
+                    "error": "Start date and end date are required."
+                }
+
+            # Use the actual previous due date if supplied.
+            # Do not invent a previous due date.
+            previous_due_date = (
+                state.get("previous_due_date")
+                or state.get("due_date")
+                or ""
+            )
+
+            result = generate_custom_task_replanning(
+                task={
+                    "task_id": 1,
+                    "action_text": action_text,
+                    "custom_actions": action_text,
+                    "is_custom": True,
+                    "status": "pending",
+                    "due_date": previous_due_date,
+                },
+                start_date=str(start_date),
+                end_date=str(end_date),
+                available_minutes=state.get("available_minutes"),
+            )
+
+            suggestion = result.get("suggestion", "")
+            encouragement = result.get("encouragement", "")
+
+            replanning_message = "\n\n".join(
+                part for part in [suggestion, encouragement] if part
+            )
+
             return {
-                "error": "Start date and end date are required."
+                "revised_plan": [result],
+                "replanning_message": replanning_message,
+                "error": None,
             }
 
-        result = generate_custom_task_replanning(
-            task={
-                "task_id": 1,
-                "action_text": action_text,
-                "custom_actions": action_text,
-                "is_custom": True,
-                "status": "pending",
-                "due_date": state.get("start_date", "")
-            },
-            start_date=state["start_date"],
-            end_date=state["end_date"],
-            available_minutes=state.get("available_minutes")
+        # ----------------------------------
+        # Existing overdue tasks replanning
+        # ----------------------------------
+
+        tasks = prepare_overdue_tasks(
+            state.get("overdue_tasks", [])
         )
 
-        suggestion = result.get("suggestion", "")
-        encouragement = result.get("encouragement", "")
+        if not tasks:
+            return {
+                "revised_plan": [],
+                "replanning_message": "لا توجد مهام لإعادة تخطيطها.",
+                "error": None,
+            }
 
-        replanning_message = "\n\n".join(
-            part for part in [suggestion, encouragement] if part
+        result = generate_replanning_plan_with_ai(
+            tasks=tasks,
+            available_minutes=state.get("available_minutes"),
         )
 
         return {
-            "revised_plan": [result],
-            "replanning_message": replanning_message,
-            "error": None
+            "revised_plan": result.get("recommendations", []),
+            "replanning_message": result.get("encouragement", ""),
+            "error": None,
         }
 
-    tasks = prepare_overdue_tasks(
-        state.get("overdue_tasks", [])
-    )
-
-    if not tasks:
-        return {
-            "revised_plan": [],
-            "replanning_message": "لا توجد مهام لإعادة تخطيطها.",
-            "error": None
-        }
-
-    result = generate_replanning_plan_with_ai(
-        tasks=tasks,
-        available_minutes=state.get("available_minutes")
-    )
-
-    return {
-        "revised_plan": result.get("recommendations", []),
-        "replanning_message": result.get("encouragement", ""),
-        "error": None
-    }
+    except Exception as e:
+        return {"error": f"Replanning error: {str(e)}"}
 
 
 # ==========================================
-# 7. ROUTE AFTER PLANNER
-# ==========================================
-
-def route_after_planner(state: QuranReflectionState) -> str:
-
-    if state.get("error"):
-        return END
-
-    if state.get("run_replanning") and (
-        state.get("overdue_tasks")
-        or state.get("replan_custom_action")
-    ):
-        return "replanning"
-
-    return END
-
-
-# ==========================================
-# 8. BUILD LANGGRAPH WORKFLOW
+# 7. BUILD LANGGRAPH WORKFLOW
 # ==========================================
 
 graph = StateGraph(QuranReflectionState)
@@ -263,21 +290,13 @@ graph.add_conditional_edges(
     {
         "reflection": "reflection",
         "planner": "planner",
-        END: END
-    }
+        "replanning": "replanning",
+        END: END,
+    },
 )
 
 graph.add_edge("reflection", END)
-
-graph.add_conditional_edges(
-    "planner",
-    route_after_planner,
-    {
-        "replanning": "replanning",
-        END: END
-    }
-)
-
+graph.add_edge("planner", END)
 graph.add_edge("replanning", END)
 
 app = graph.compile()
