@@ -55,6 +55,7 @@ class QuranReflectionState(TypedDict, total=False):
     overdue_tasks: List[Task]
     revised_plan: List[Dict[str, Any]]
     replanning_message: str
+    previous_due_date: str
 
     # General
     messages: List[str]
