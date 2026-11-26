@@ -13,7 +13,20 @@ from rag_retriever import format_rag_prompt_context
 
 
 # ==========================================
-# 1. RAG NODE
+# 1. ROUTE FROM START
+# ==========================================
+
+def route_from_start(state: QuranReflectionState) -> str:
+    """Choose whether to start with RAG or replanning."""
+
+    if state.get("run_replanning"):
+        return "replanning"
+
+    return "rag"
+
+
+# ==========================================
+# 2. RAG NODE
 # ==========================================
 
 def rag_node(state: QuranReflectionState) -> dict:
@@ -29,51 +42,46 @@ def rag_node(state: QuranReflectionState) -> dict:
     except (TypeError, ValueError):
         return {"error": "verse_number must be a valid integer."}
 
-    context = format_rag_prompt_context(verse_num)
+    try:
+        context = format_rag_prompt_context(verse_num)
 
-    if not context:
+        if not context:
+            return {
+                "error": f"No Quran context found for verse {verse_num}."
+            }
+
         return {
-            "error": f"No Quran context found for verse {verse_num}."
+            "quran_context": context,
+            "tafsir_text": context,
+            "error": None,
         }
 
-    return {
-        "quran_context": context,
-        "tafsir_text": context,
-        "error": None,
-    }
+    except Exception as e:
+        return {"error": f"RAG error: {str(e)}"}
 
 
 # ==========================================
-# 2. ROUTE AFTER RAG
+# 3. ROUTE AFTER RAG
 # ==========================================
 
 def route_after_rag(state: QuranReflectionState) -> str:
-    """Choose the correct workflow path."""
+    """Choose reflection or planning."""
 
     if state.get("error"):
         return END
 
-    # Replanning has priority over creating a new plan.
-    if state.get("run_replanning") and (
-        state.get("replan_custom_action")
-        or state.get("overdue_tasks")
-    ):
-        return "replanning"
-
-    # Normal planning.
     if state.get("selected_action") or state.get("custom_action"):
         return "planner"
 
-    # Reflection only.
     return "reflection"
 
 
 # ==========================================
-# 3. REFLECTION NODE
+# 4. REFLECTION NODE
 # ==========================================
 
 def reflection_node(state: QuranReflectionState) -> dict:
-    """Generate reflection and suggested behavioral actions."""
+    """Generate reflection and suggested actions."""
 
     context = state.get("quran_context") or ""
 
@@ -95,7 +103,7 @@ def reflection_node(state: QuranReflectionState) -> dict:
 
 
 # ==========================================
-# 4. PLANNER NODE
+# 5. PLANNER NODE
 # ==========================================
 
 def planner_node(state: QuranReflectionState) -> dict:
@@ -108,9 +116,7 @@ def planner_node(state: QuranReflectionState) -> dict:
     ).strip()
 
     if not action_text:
-        return {
-            "error": "Please select an action before planning."
-        }
+        return {"error": "Please select an action before planning."}
 
     context = state.get("quran_context") or ""
 
@@ -144,7 +150,7 @@ def planner_node(state: QuranReflectionState) -> dict:
 
 
 # ==========================================
-# 5. PREPARE OVERDUE TASKS
+# 6. PREPARE OVERDUE TASKS
 # ==========================================
 
 def prepare_overdue_tasks(
@@ -155,7 +161,6 @@ def prepare_overdue_tasks(
     prepared_tasks = []
 
     for index, task in enumerate(tasks, start=1):
-
         prepared_tasks.append({
             "task_id": task.get("task_id", index),
             "action_text": (
@@ -173,7 +178,7 @@ def prepare_overdue_tasks(
 
 
 # ==========================================
-# 6. REPLANNING NODE
+# 7. REPLANNING NODE
 # ==========================================
 
 def replanning_node(state: QuranReflectionState) -> dict:
@@ -194,9 +199,7 @@ def replanning_node(state: QuranReflectionState) -> dict:
             ).strip()
 
             if not action_text:
-                return {
-                    "error": "Custom action is required."
-                }
+                return {"error": "Custom action is required."}
 
             start_date = state.get("start_date")
             end_date = state.get("end_date")
@@ -206,13 +209,7 @@ def replanning_node(state: QuranReflectionState) -> dict:
                     "error": "Start date and end date are required."
                 }
 
-            # Use the actual previous due date if supplied.
-            # Do not invent a previous due date.
-            previous_due_date = (
-                state.get("previous_due_date")
-                or state.get("due_date")
-                or ""
-            )
+            previous_due_date = state.get("previous_due_date") or ""
 
             result = generate_custom_task_replanning(
                 task={
@@ -272,7 +269,7 @@ def replanning_node(state: QuranReflectionState) -> dict:
 
 
 # ==========================================
-# 7. BUILD LANGGRAPH WORKFLOW
+# 8. BUILD LANGGRAPH WORKFLOW
 # ==========================================
 
 graph = StateGraph(QuranReflectionState)
@@ -282,21 +279,34 @@ graph.add_node("reflection", reflection_node)
 graph.add_node("planner", planner_node)
 graph.add_node("replanning", replanning_node)
 
-graph.add_edge(START, "rag")
 
+# Start routing
+graph.add_conditional_edges(
+    START,
+    route_from_start,
+    {
+        "rag": "rag",
+        "replanning": "replanning",
+    },
+)
+
+
+# RAG routing
 graph.add_conditional_edges(
     "rag",
     route_after_rag,
     {
         "reflection": "reflection",
         "planner": "planner",
-        "replanning": "replanning",
         END: END,
     },
 )
 
+
+# Finish nodes
 graph.add_edge("reflection", END)
 graph.add_edge("planner", END)
 graph.add_edge("replanning", END)
+
 
 app = graph.compile()
