@@ -1,24 +1,27 @@
 # =============================================================================
-# planner_agent.py  (Week 2)
+# planner_agent.py  (Week 3)
 # الدور: Action Planner Agent - وكيل تخطيط الواجبات السلوكية (LangGraph + Gemini)
 #
-# المطلوب في الأسبوع التاني:
-#   ربط دالة التخطيط بـ Gemini API فعليا، وتأمين المخرجات بصيغة منظمة (Structured
-#   Output)، بحيث الوكيل ياخد (اسم الواجب + الوقت المتاح) ويطلّع جدول لـ 7 أيام،
-#   لكل يوم تاريخ ووقت محددين.
+# المطلوب في الأسبوع التالت:
+#   1) تحديث الـ Prompt: الموديل يكتب فقرة تدبرية دافئة بتجمع مقاصد الآية وتنزّل
+#      معانيها على واقع المسلم المعاصر، ويستخرج 3 إلى 4 اقتراحات سلوكية عملية.
+#   2) تعديل الـ Structured Output: كائن فيه reflection_text و suggested_actions.
+#   3) دعم الجدول المخصص: استقبال العمل المختار (مقترح أو مكتوب بإيد المستخدم)
+#      مع تاريخ البداية والنهاية (أو المدة) وبناء التوزيع الزمني على المدة دي.
 #
-# اللي اتضاف عن الأسبوع الأول:
-#   1) Validator: خطوة تتأكد بالكود إن الخطة سليمة (التواريخ، الأوقات، وإن مجموع
-#      الدقائق في اليوم ما يعدّيش الوقت المتاح) بدل ما نثق في الموديل بس.
-#   2) Retry: لو الخطة فيها مشاكل، الـ Graph بيرجع للموديل ويديله الأخطاء يصلّحها
-#      (لحد 3 محاولات).
-#   3) plan_to_calendar_events: دالة بتحوّل الخطة لشكل جاهز لدالة التقويم
-#      add_event_to_calendar بتاعة بسمة.
-#   4) quran_context: متغير اختياري بيستقبل سياق الآية والتفسير من الـ RAG
-#      (rag_retriever.py بتاع مروة) ويتحط في الـ Prompt عشان الواجبات تتبني
-#      على معنى الآية. لو مش متبعت، الـ Planner بيشتغل زي الأول.
+# اللي اتضاف عن الأسبوع التاني:
+#   - generate_reflection(quran_context): الخطوة الأولى (بعد الـ RAG) وبترجّع
+#       reflection_text + suggested_actions للواجهة.
+#   - plan_action(...): بقت بتقبل end_date أو duration_days و is_custom، وعدد
+#       الأيام بقى ديناميكي (مش 7 ثابتة). لو ما اتبعتش end_date ولا duration_days
+#       بتشتغل 7 أيام زي الأول (متوافقة مع الكود القديم).
+#   - Validator بقى بيحسب على عدد الأيام الفعلي بدل PLAN_DAYS الثابتة.
 #
-# شكل الـ Graph:
+# الفلو الكامل:
+#   RAG --> generate_reflection --> (الواجهة: المستخدم يختار مقترح أو يكتب عمله)
+#       --> plan_action(start_date, end_date) --> plan_to_calendar_events
+#
+# شكل الـ Graph (الجدولة):
 #   START --> planner --> validator --(فيه أخطاء ولسه فيه محاولات)--> planner
 #                                    \--(سليمة أو خلصت المحاولات)--> END
 # =============================================================================
@@ -46,20 +49,44 @@ if not os.getenv("GOOGLE_API_KEY"):
 # 2) إعدادات ثابتة
 # -----------------------------------------------------------------------------
 # اسم الموديل. لو ظهر error 404 جربي تحطي في .env سطر: GEMINI_MODEL=gemini-2.5-flash
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 
-# أقصى عدد محاولات للموديل لو الخطة طلعت فيها أخطاء.
+# أقصى عدد محاولات للموديل لو الناتج طلع فيه أخطاء.
 MAX_ATTEMPTS = 3
 
-# عدد أيام الخطة.
-PLAN_DAYS = 7
+# المدة الافتراضية للخطة (أسبوع) لو المستخدم ما حددش تاريخ نهاية ولا مدة.
+DEFAULT_PLAN_DAYS = 7
+
+# أقصى مدة مسموحة للخطة (شهر) عشان الـ Prompt والخرج ما يكبروش زيادة.
+MAX_PLAN_DAYS = 31
+
+# حدود عدد الاقتراحات السلوكية في خطوة التدبر.
+MIN_SUGGESTIONS = 3
+MAX_SUGGESTIONS = 4
 
 
 # -----------------------------------------------------------------------------
 # 3) شكل الخرج (Structured Output)
 # -----------------------------------------------------------------------------
 # الموديل بيتجبر يرجّع بالشكل ده بالظبط، فنتجنب النص الحر ونقدر نقرا النتيجة
-# بالكود (التقويم، الـ Replanning Agent).
+# بالكود (الواجهة، التقويم، الـ Replanning Agent).
+
+class ReflectionOutput(BaseModel):
+    """خرج خطوة التدبر: فقرة تدبرية + اقتراحات سلوكية."""
+    reflection_text: str = Field(
+        description=(
+            "One warm Arabic paragraph (4-6 sentences) that explains the objectives "
+            "(maqasid) of the verses and applies their meanings to the daily reality "
+            "of a Muslim living today."
+        )
+    )
+    suggested_actions: list[str] = Field(
+        description=(
+            "3 to 4 practical, specific behavioral actions in simple Arabic, "
+            "one short sentence each."
+        )
+    )
+
 
 class DayTask(BaseModel):
     """مهمة واحدة في يوم واحد."""
@@ -70,22 +97,25 @@ class DayTask(BaseModel):
 
 
 class WeeklyPlan(BaseModel):
-    """الخطة الأسبوعية كاملة."""
+    """الخطة كاملة (أسبوع أو أكتر حسب تاريخ البداية والنهاية)."""
     summary: str = Field(description="One short Arabic sentence summarizing the plan")
     tasks: list[DayTask]
 
 
 # -----------------------------------------------------------------------------
-# 4) الـ State (البيانات اللي بتتنقل جوه الـ Graph)
+# 4) الـ State (البيانات اللي بتتنقل جوه الـ Graph بتاع الجدولة)
 # -----------------------------------------------------------------------------
-# الحقول الأربعة الأولى هي المدخلات (اتفقنا عليها مع صفاء في state.py).
+# الحقول الأولى هي المدخلات (اتفقنا عليها مع صفاء في state.py).
 # باقي الحقول داخلية للـ Planner: بتخلّي الـ Graph يعيد المحاولة لو فيه أخطاء.
 
 class PlannerState(TypedDict):
     quran_context: str       # سياق الآية والتفسير المجلوب من الـ RAG (اختياري)
-    action_text: str         # الواجب العملي المختار
+    action_text: str         # الواجب العملي المختار (مقترح أو مخصص)
+    is_custom: bool          # True لو المستخدم كتب العمل بنفسه
     available_minutes: int   # الوقت المتاح كل يوم بالدقائق
     start_date: str          # تاريخ البداية YYYY-MM-DD
+    end_date: str            # تاريخ النهاية YYYY-MM-DD (شامل)
+    plan_days: int           # عدد أيام الخطة (محسوب من البداية والنهاية)
     preferred_time: str      # "18:00" أو "morning" أو "after Fajr" أو "any"
     plan: dict               # الخطة الناتجة
     feedback: str            # ملاحظات الـ Validator للموديل في المحاولة اللي بعدها
@@ -94,12 +124,43 @@ class PlannerState(TypedDict):
 
 
 # -----------------------------------------------------------------------------
-# 5) الموديل (Gemini) والـ Prompt
+# 5) الموديلات (Gemini) والـ Prompts
 # -----------------------------------------------------------------------------
-# temperature=0.3: ردود ثابتة. with_structured_output: بيرجّع كائن WeeklyPlan.
+# موديل الجدولة: temperature=0.3 عشان الردود تبقى ثابتة.
 llm = ChatGoogleGenerativeAI(model=MODEL_NAME, temperature=0.3)
 structured_llm = llm.with_structured_output(WeeklyPlan)
 
+# موديل التدبر: temperature أعلى شوية (0.6) عشان الفقرة تبقى دافية وطبيعية.
+reflection_llm = ChatGoogleGenerativeAI(model=MODEL_NAME, temperature=0.6)
+structured_reflection_llm = reflection_llm.with_structured_output(ReflectionOutput)
+
+# ---- Prompt التدبر (الخطوة الأولى بعد الـ RAG) ----
+REFLECTION_PROMPT = """You are a warm reflection guide for a Quran reflection app.
+Use ONLY the Quranic and Tafsir context below.
+
+Quranic & Tafsir Context:
+{quran_context}
+
+Produce two things:
+
+1) reflection_text: ONE flowing Arabic paragraph (4 to 6 sentences) that
+   - explains the objectives (maqasid) and core meanings of these verses, then
+   - applies those meanings to the daily reality of a Muslim living today
+     (for example: work pressure, family, phone and social media, stress, relationships).
+   Make it feel personal and encouraging, not like a lecture.
+
+2) suggested_actions: {min_s} to {max_s} practical behavioral actions that flow from the paragraph.
+
+Rules:
+- Base the paragraph only on the context above. Do NOT invent hadith, narrations,
+  scholar names, or tafsir that is not in the context.
+- Do NOT give religious rulings (fatwas). Keep the actions practical, not legal.
+- Write in simple, warm Arabic.
+- Each action must be: one short sentence, starting with a verb, concrete and doable in
+  5 to 30 minutes a day, and clearly different from the other actions.
+"""
+
+# ---- Prompt الجدولة (بعد ما المستخدم يختار العمل ويحدد التواريخ) ----
 PROMPT = """You are an Action Planner for a Quran reflection app.
 Turn the practical action below into a {plan_days}-day schedule based on the Quranic context provided.
 
@@ -107,17 +168,20 @@ Quranic & Tafsir Context:
 {quran_context}
 
 Action: {action_text}
+Action source: {action_source}
 Available time per day: {available_minutes} minutes
 Start date: {start_date}
+End date: {end_date}
 Preferred time: {preferred_time}
 
 Rules:
-- The plan must cover exactly {plan_days} consecutive days, starting on the start date.
+- The plan must cover exactly {plan_days} consecutive days, from the start date to the end date (both included).
 - The total duration of all tasks in one day must NEVER exceed the available minutes.
 - Every task must have a specific date (YYYY-MM-DD), a time (HH:MM, 24-hour), and duration_min.
 - Schedule every task at the preferred time. If it is a time of day (e.g. morning, after Fajr),
   convert it to a reasonable HH:MM. If it is "any", choose a suitable time.
-- Start small and build gradually; one short task per day is fine.
+- Start small and build gradually; one short task per day is fine. For longer plans, vary the
+  wording of the daily task a little so it does not feel repetitive.
 - Write the task text in simple, warm Arabic.
 - Do NOT add any tafsir or religious rulings; only practical steps.
 """
@@ -126,12 +190,43 @@ Rules:
 
 
 # -----------------------------------------------------------------------------
-# 6) التحقق من الخطة (Validation) - بالكود مش بالموديل
+# 6) التحقق (Validation) - بالكود مش بالموديل
 # -----------------------------------------------------------------------------
 TIME_PATTERN = re.compile(r"([01]\d|2[0-3]):[0-5]\d")  # HH:MM
 
 
-def validate_plan(plan: dict, available_minutes: int, start_date: str) -> list[str]:
+def resolve_dates(
+    start_date: str | None,
+    end_date: str | None = None,
+    duration_days: int | None = None,
+) -> tuple[str, str, int]:
+    """
+    بتحدد تاريخ البداية والنهاية وعدد الأيام. الأولوية:
+      1) end_date لو اتبعت  2) duration_days (7 = أسبوع، 30 = شهر)  3) 7 أيام.
+    بترجّع (start_date, end_date, plan_days) وبتعمل ValueError لو المدخلات غلط.
+    """
+    start = date.fromisoformat(start_date) if start_date else date.today()
+
+    if end_date:
+        end = date.fromisoformat(end_date)
+    else:
+        end = start + timedelta(days=(duration_days or DEFAULT_PLAN_DAYS) - 1)
+
+    plan_days = (end - start).days + 1
+    if plan_days < 1:
+        raise ValueError("end_date must be on or after start_date.")
+    if plan_days > MAX_PLAN_DAYS:
+        raise ValueError(f"The plan cannot be longer than {MAX_PLAN_DAYS} days.")
+
+    return start.isoformat(), end.isoformat(), plan_days
+
+
+def validate_plan(
+    plan: dict,
+    available_minutes: int,
+    start_date: str,
+    plan_days: int = DEFAULT_PLAN_DAYS,
+) -> list[str]:
     """بترجّع قايمة أخطاء. لو القايمة فاضية يبقى الخطة سليمة."""
     errors: list[str] = []
     tasks = plan.get("tasks", [])
@@ -140,11 +235,11 @@ def validate_plan(plan: dict, available_minutes: int, start_date: str) -> list[s
         return ["The plan has no tasks."]
 
     start = date.fromisoformat(start_date)
-    end = start + timedelta(days=PLAN_DAYS - 1)
+    end = start + timedelta(days=plan_days - 1)
     minutes_per_day: dict[str, int] = {}
 
     for t in tasks:
-        # 1) التاريخ لازم يكون بصيغة صحيحة وداخل نطاق الـ 7 أيام.
+        # 1) التاريخ لازم يكون بصيغة صحيحة وداخل نطاق الخطة.
         try:
             d = date.fromisoformat(t["date"])
         except ValueError:
@@ -171,9 +266,9 @@ def validate_plan(plan: dict, available_minutes: int, start_date: str) -> list[s
                 f"On {day} total is {total} min, but only {available_minutes} min are available."
             )
 
-    # 6) لازم كل يوم من الـ 7 أيام يبقى فيه مهمة على الأقل.
+    # 6) لازم كل يوم من أيام الخطة يبقى فيه مهمة على الأقل.
     covered = set(minutes_per_day)
-    for i in range(PLAN_DAYS):
+    for i in range(plan_days):
         day = (start + timedelta(days=i)).isoformat()
         if day not in covered:
             errors.append(f"No task scheduled on {day}.")
@@ -181,8 +276,31 @@ def validate_plan(plan: dict, available_minutes: int, start_date: str) -> list[s
     return errors
 
 
+def validate_reflection(data: dict) -> list[str]:
+    """بتتأكد إن التدبر والاقتراحات بالشكل المطلوب. قايمة فاضية = سليم."""
+    errors: list[str] = []
+
+    text = (data.get("reflection_text") or "").strip()
+    if len(text) < 80:
+        errors.append("reflection_text is too short; write a full paragraph of 4-6 sentences.")
+    elif len(text) > 1500:
+        errors.append("reflection_text is too long; keep it to one paragraph of 4-6 sentences.")
+
+    actions = [a.strip() for a in data.get("suggested_actions", []) if a and a.strip()]
+    if not (MIN_SUGGESTIONS <= len(actions) <= MAX_SUGGESTIONS):
+        errors.append(
+            f"Provide {MIN_SUGGESTIONS} to {MAX_SUGGESTIONS} suggested actions (got {len(actions)})."
+        )
+    if len(set(actions)) != len(actions):
+        errors.append("Suggested actions must be different from each other.")
+    if any(len(a) > 160 for a in actions):
+        errors.append("Each action must be one short sentence.")
+
+    return errors
+
+
 # -----------------------------------------------------------------------------
-# 7) الـ Nodes (خطوات الـ Graph)
+# 7) الـ Nodes (خطوات الـ Graph بتاع الجدولة)
 # -----------------------------------------------------------------------------
 def planner_node(state: PlannerState) -> dict:
     """بتبعت الـ Prompt لـ Gemini وترجّع الخطة."""
@@ -190,8 +308,13 @@ def planner_node(state: PlannerState) -> dict:
     values = {
         **state,
         "quran_context": state["quran_context"] or "(No Quranic context provided.)",
+        "action_source": (
+            "written by the user; keep its intent exactly"
+            if state["is_custom"]
+            else "suggested by the app"
+        ),
     }
-    prompt = PROMPT.format(plan_days=PLAN_DAYS, **values)
+    prompt = PROMPT.format(**values)
 
     # لو دي محاولة تانية، بنضيف الأخطاء السابقة عشان الموديل يصلّحها.
     if state["feedback"]:
@@ -206,7 +329,9 @@ def planner_node(state: PlannerState) -> dict:
 
 def validator_node(state: PlannerState) -> dict:
     """بتفحص الخطة بالكود وتسجّل الأخطاء في الـ State."""
-    errors = validate_plan(state["plan"], state["available_minutes"], state["start_date"])
+    errors = validate_plan(
+        state["plan"], state["available_minutes"], state["start_date"], state["plan_days"]
+    )
     feedback = "\n".join(f"- {e}" for e in errors)
     return {"warnings": errors, "feedback": feedback}
 
@@ -232,28 +357,69 @@ app = graph.compile()
 
 
 # -----------------------------------------------------------------------------
-# 9) الدالة الرئيسية اللي باقي التيم بيستدعيها
+# 9) الدوال الرئيسية اللي باقي التيم بيستدعيها
 # -----------------------------------------------------------------------------
+def generate_reflection(quran_context: str) -> dict:
+    """
+    الخطوة الأولى (بعد الـ RAG): بتاخد نص الآية والتفسير وبترجّع dict فيه:
+      reflection_text   : فقرة تدبرية مربوطة بواقع المسلم اليوم
+      suggested_actions : قايمة فيها 3 إلى 4 اقتراحات سلوكية
+      warnings          : أخطاء متبقية بعد المحاولات (قايمة فاضية = سليم)
+    """
+    if not quran_context or not quran_context.strip():
+        raise ValueError("quran_context is required to generate a reflection.")
+
+    base_prompt = REFLECTION_PROMPT.format(
+        quran_context=quran_context, min_s=MIN_SUGGESTIONS, max_s=MAX_SUGGESTIONS
+    )
+    feedback = ""
+    data: dict = {}
+    errors: list[str] = []
+
+    for _ in range(MAX_ATTEMPTS):
+        prompt = base_prompt
+        if feedback:
+            prompt += "\nYour previous answer had these problems. Fix all of them:\n" + feedback
+
+        data = structured_reflection_llm.invoke(prompt).model_dump()
+        errors = validate_reflection(data)
+        if not errors:
+            break
+        feedback = "\n".join(f"- {e}" for e in errors)
+
+    return {**data, "warnings": errors}
+
+
 def plan_action(
     action_text: str,
     available_minutes: int,
     quran_context: str = "",
     start_date: str | None = None,
     preferred_time: str = "any",
+    end_date: str | None = None,
+    duration_days: int | None = None,
+    is_custom: bool = False,
 ) -> dict:
     """
-    بتاخد الواجب والوقت المتاح (وسياق الآية من الـ RAG لو متاح) وبترجّع dict فيه:
-      summary  : ملخص الخطة
-      tasks    : قايمة مهام (date, time, duration_min, task)
-      warnings : أخطاء متبقية بعد المحاولات (قايمة فاضية = الخطة سليمة)
+    بتاخد العمل المختار (مقترح أو مخصص) والوقت المتاح والتواريخ، وبترجّع dict فيه:
+      summary    : ملخص الخطة
+      tasks      : قايمة مهام (date, time, duration_min, task)
+      start_date : تاريخ البداية
+      end_date   : تاريخ النهاية (عشان يتخزن في الداتابيز عند مي)
+      warnings   : أخطاء متبقية بعد المحاولات (قايمة فاضية = الخطة سليمة)
+
+    المدة: end_date لو اتبعت، وإلا duration_days (7 = أسبوع، 30 = شهر)، وإلا 7 أيام.
     """
-    start_date = start_date or date.today().isoformat()
+    start_date, end_date, plan_days = resolve_dates(start_date, end_date, duration_days)
 
     out = app.invoke({
         "quran_context": quran_context,
         "action_text": action_text,
+        "is_custom": is_custom,
         "available_minutes": available_minutes,
         "start_date": start_date,
+        "end_date": end_date,
+        "plan_days": plan_days,
         "preferred_time": preferred_time,
         "plan": {},
         "feedback": "",
@@ -261,7 +427,12 @@ def plan_action(
         "warnings": [],
     })
 
-    return {**out["plan"], "warnings": out["warnings"]}
+    return {
+        **out["plan"],
+        "start_date": start_date,
+        "end_date": end_date,
+        "warnings": out["warnings"],
+    }
 
 
 # -----------------------------------------------------------------------------
@@ -290,19 +461,39 @@ def plan_to_calendar_events(plan: dict) -> list[dict]:
 if __name__ == "__main__":
     import json
 
-    # حالات تجربة مختلفة: واجب + وقت متاح + وقت مفضل.
-    test_cases = [
-        ("اذكر الله 5 دقائق بعد كل صلاة", 15, "18:00"),
-        ("صلة الرحم: اتصل بقريب كل يوم", 10, "morning"),
-        ("قراءة صفحة من التفسير وتدبّرها", 30, "after Fajr"),
-    ]
+    # سياق تجريبي (في المشروع الحقيقي بييجي من rag_retriever.py بتاع مروة).
+    sample_context = (
+        "الآيات: ﴿وَقُولُوا لِلنَّاسِ حُسْنًا﴾ (البقرة: 83)\n"
+        "التفسير: أمرٌ بحسن الكلام مع الناس جميعًا، ولين الخطاب، وطيب المعاملة."
+    )
 
-    for action, minutes, pref in test_cases:
-        print("=" * 60)
-        print(f"Action: {action} | {minutes} min/day | preferred: {pref}")
-        result = plan_action(action, minutes, preferred_time=pref)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+    # 1) خطوة التدبر: فقرة + اقتراحات.
+    print("=" * 60)
+    reflection = generate_reflection(sample_context)
+    print(json.dumps(reflection, ensure_ascii=False, indent=2))
 
-        # عرض شكل الأحداث الجاهزة للتقويم (أول حدث بس للاختصار).
-        events = plan_to_calendar_events(result)
-        print("First calendar event:", events[0] if events else "none")
+    # 2) عمل مقترح لمدة أسبوع (تاريخ النهاية بيتحسب تلقائي).
+    print("=" * 60)
+    chosen = reflection["suggested_actions"][0]
+    week_plan = plan_action(
+        chosen, 15, quran_context=sample_context, preferred_time="18:00", is_custom=False
+    )
+    print(json.dumps(week_plan, ensure_ascii=False, indent=2))
+
+    # 3) عمل مخصص بتاريخ بداية ونهاية (حوالي أسبوعين).
+    print("=" * 60)
+    start = date.today()
+    custom_plan = plan_action(
+        "أتصل بجدتي كل يوم وأسأل عن أحوالها",
+        10,
+        quran_context=sample_context,
+        start_date=start.isoformat(),
+        end_date=(start + timedelta(days=13)).isoformat(),
+        preferred_time="after Fajr",
+        is_custom=True,
+    )
+    print(json.dumps(custom_plan, ensure_ascii=False, indent=2))
+
+    # عرض شكل الأحداث الجاهزة للتقويم (أول حدث بس للاختصار).
+    events = plan_to_calendar_events(custom_plan)
+    print("First calendar event:", events[0] if events else "none")
