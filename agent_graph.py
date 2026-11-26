@@ -24,6 +24,11 @@ def rag_node(state: QuranReflectionState) -> dict:
     if verse_num is None:
         return {"error": "verse_number is required."}
 
+    try:
+        verse_num = int(verse_num)
+    except (TypeError, ValueError):
+        return {"error": "verse_number must be a valid integer."}
+
     context = format_rag_prompt_context(verse_num)
 
     if not context:
@@ -185,9 +190,16 @@ def replanning_node(state: QuranReflectionState) -> dict:
             available_minutes=state.get("available_minutes")
         )
 
+        suggestion = result.get("suggestion", "")
+        encouragement = result.get("encouragement", "")
+
+        replanning_message = "\n\n".join(
+            part for part in [suggestion, encouragement] if part
+        )
+
         return {
             "revised_plan": [result],
-            "replanning_message": result.get("encouragement", ""),
+            "replanning_message": replanning_message,
             "error": None
         }
 
@@ -198,7 +210,8 @@ def replanning_node(state: QuranReflectionState) -> dict:
     if not tasks:
         return {
             "revised_plan": [],
-            "replanning_message": "لا توجد مهام لإعادة تخطيطها."
+            "replanning_message": "لا توجد مهام لإعادة تخطيطها.",
+            "error": None
         }
 
     result = generate_replanning_plan_with_ai(
